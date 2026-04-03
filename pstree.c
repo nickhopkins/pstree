@@ -1,5 +1,8 @@
 /*	This is pstree written by Fred Hucht (c) 1992-2022	*
  *	E-Mail: fred AT thp.uni-due.de				*
+ *	Modified by 1986535+nickhopkins@users.noreply.github.com*
+ *	(c) 2026
+ *
  *	Feel free to copy and redistribute in terms of the	*
  * 	GNU public license. 					*
  */
@@ -153,6 +156,8 @@ int snprintf(char *, int, char *, ...);
 #include <sys/ioctl.h>		/* For TIOCGSIZE/TIOCGWINSZ */
 /* #include <termios.h> */
 
+#include "ANSI-color-codes.h"
+
 #ifdef DEBUG
 # include <errno.h>
 #endif
@@ -191,19 +196,16 @@ enum { G_ASCII = 0, G_PC850 = 1, G_VT100 = 2, G_UTF8 = 3, G_LAST };
 
 /* VT sequences contributed by Randall Hopper <rhh AT ct.picker.com> */
 /* UTF8 sequences contributed by Mark-Andre Hopf <mhopf AT mark13.org> */
+/* These were origonally listed in octal. Converted to actual utf8 chars
+ * { "──",       "─┬",       "=",    "─",    "├",    "│",    "└",    "",     "",     ""             },
+ */
+
 static struct TreeChars TreeChars[] = {
   /* SS          PP          G       N       C       B       L      sg      eg      init */
   { "--",       "-+",       "=",    "-",    "|",    "|",    "\\",   "",     "",     ""             }, /*Ascii*/
   { "\304\304", "\304\302", "\372", "\304", "\303", "\263", "\300", "",     "",     ""             }, /*Pc850*/
   { "qq",       "qw",       "`",    "q",    "t",    "x",    "m",    "\016", "\017", "\033(B\033)0" }, /*Vt100*/
-  { "\342\224\200\342\224\200",
-    /**/        "\342\224\200\342\224\254",
-    /**/                    "=",
-    /**/                            "\342\224\200",
-    /**/                                    "\342\224\234",
-    /**/                                            "\342\224\202",
-    /**/                                                    "\342\224\224",
-    /**/                                                            "",     "",     ""             }  /*UTF8*/
+  { "──",       "─┬",       "▶",    "▷",    "├",    "│",    "└",    "",     "",     ""             },
 }, *C;
 
 static int MyPid, NProc, Columns, RootPid;
@@ -215,6 +217,7 @@ static char *input = NULL;
 static int atLdepth=0;    /* LOPTION - track how deep in the print chain we are */
 static int maxLdepth=100; /* LOPTION - will be changed by -l n option */
 static int compress = FALSE;
+static int color = FALSE;
 
 #ifdef DEBUG
 static int debug = FALSE;
@@ -420,8 +423,26 @@ static int GetProcessesDirect(void) {
 	     globbuf.gl_pathv[globbuf.gl_pathc - i - 1], "/stat");
     tn = fopen(name, "r");
     if (tn == NULL) continue; /* process vanished since glob() */
-    fscanf(tn, "%ld %s %*c %ld %ld",
-	   &P[j].pid, P[j].cmd, &P[j].ppid, &P[j].pgid);
+
+    char readbuf[MAXLINE];
+    unsigned long size = 0;
+    size = fread(readbuf, 1, MAXLINE - 1, tn);
+    if (ferror(tn) == 0) {
+      readbuf[size] = 0;
+
+      /* read PID */
+      sscanf(readbuf, "%ld ", &P[j].pid);
+
+      /* commands may have spaces,'(',')' in them, so extract the name from the first '(' to the last ')' */
+      char *leftp;
+      char *rightp;
+      if ((leftp = strchr(readbuf, '(')) && (rightp = strrchr(readbuf, ')'))) {
+        ++leftp;
+        *rightp = '\0';
+        strncpy(P[j].cmd, leftp, rightp-leftp);
+        sscanf(rightp + 2, "%*c %ld %ld", &P[j].ppid, &P[j].pgid ); // +2 to skip ") "
+      }
+    }
     fclose(tn);
     P[j].thcount = 1;
     
@@ -730,19 +751,40 @@ static void PrintTree(int idx, const char *head) {
   if(atLdepth == maxLdepth) return;    /* LOPTION */
   ++atLdepth;                          /* LOPTION */
  
+  int not_root = strcmp(P[idx].name, "root");
   
-  snprintf(out, sizeof(out),
-	   "%s%s%s%s%s%s %05ld %s %s%s" /*" (ch=%d, si=%d, pr=%d)"*/,
-	   C->sg,
-	   head,
-	   head[0] == '\0' ? "" : EXIST(P[idx].sister) ? C->barc : C->barl,
-	   EXIST(P[idx].child)       ? C->p   : C->s2,
-	   P[idx].pid == P[idx].pgid ? C->pgl : C->npgl,
-	   C->eg,
-	   P[idx].pid, P[idx].name,
-	   thread,
-	   P[idx].cmd
-	   /*,P[idx].child,P[idx].sister,P[idx].print*/);
+  if (color)
+  {
+    snprintf(out, sizeof(out),
+            "%s%s%s%s%s%s %s%05ld%s %s%s%s %s%s" /*" (ch=%d, si=%d, pr=%d)"*/,
+            C->sg,
+            head,
+            head[0] == '\0' ? "" : EXIST(P[idx].sister) ? C->barc : C->barl,
+            EXIST(P[idx].child)       ? C->p   : C->s2,
+            P[idx].pid == P[idx].pgid ? C->pgl : C->npgl,
+            C->eg,
+            HYEL, P[idx].pid, reset,
+            not_root ? HBLU : HRED, P[idx].name, reset,
+            thread,
+            P[idx].cmd
+            /*,P[idx].child,P[idx].sister,P[idx].print*/);
+
+  }
+  else
+  {
+    snprintf(out, sizeof(out),
+            "%s%s%s%s%s%s %05ld %s %s%s" /*" (ch=%d, si=%d, pr=%d)"*/,
+            C->sg,
+            head,
+            head[0] == '\0' ? "" : EXIST(P[idx].sister) ? C->barc : C->barl,
+            EXIST(P[idx].child)       ? C->p   : C->s2,
+            P[idx].pid == P[idx].pgid ? C->pgl : C->npgl,
+            C->eg,
+            P[idx].pid, P[idx].name,
+            thread,
+            P[idx].cmd
+            /*,P[idx].child,P[idx].sister,P[idx].print*/);
+  }
   
   out[Columns-1] = '\0';
   puts(out);
@@ -778,28 +820,29 @@ static void PrintTree(int idx, const char *head) {
 
 static void Usage(void) {
   fprintf(stderr,
-	  "%s\n"
-	  "%s\n\n"
-	  "Usage: %s "
+          "%s\n"
+          "%s\n\n"
+          "Usage: %s "
 #ifdef DEBUG
-	  "[-d] "
+          "[-d] "
 #endif
-	  "[-f file] [-g n] [-l n] [-u user] [-U] [-s string] [-p pid] [-w] [pid ...]\n"
-	  /*"   -a        align output\n"*/
+          "[-f file] [-g n] [-l n] [-u user] [-U] [-s string] [-p pid] [-w] [pid ...]\n"
+          /*"   -a        align output\n"*/
 #ifdef DEBUG
-	  "   -d        print debugging info to stderr\n"
+          "   -d        print debugging info to stderr\n"
 #endif
-	  "   -f file   read input from <file> (- is stdin) instead of running\n"
-	  "             \"%s\"\n"
-	  "   -g n      use graphics chars for tree. n=1: IBM-850, n=2: VT100, n=3: UTF-8\n"
-	  "   -l n      print tree to n level deep\n"
-	  "   -u user   show only branches containing processes of <user>\n"
-	  "   -U        don't show branches containing only root processes\n"
+          "   -f file   read input from <file> (- is stdin) instead of running\n"
+          "             \"%s\"\n"
+          "   -g n      use graphics chars for tree. n=1: IBM-850, n=2: VT100, n=3: UTF-8\n"
+          "   -l n      print tree to n level deep\n"
+          "   -u user   show only branches containing processes of <user>\n"
+          "   -U        don't show branches containing only root processes\n"
           "   -s string show only branches containing process with <string> in commandline\n"
           "   -p pid    show only branches containing process <pid>\n"
-	  "   -w        wide output, not truncated to window width\n"
-	  "   pid ...   process ids to start from, default is 1 (probably init)\n"
-	  , WhatString[0] + 4, WhatString[1] + 4, Progname, PSCMD);
+          "   -w        wide output, not truncated to window width\n"
+          "   -C        color output\n"
+          "   pid ...   process ids to start from, default is 1 (probably init)\n"
+          , WhatString[0] + 4, WhatString[1] + 4, Progname, PSCMD);
 #ifdef HAS_PGID
   fprintf(stderr, "\n%sProcess group leaders are marked with '%s%s%s'.\n",
 	  C->init, C->sg, C->pgl, C->eg);
@@ -819,7 +862,7 @@ int main(int argc, char **argv) {
   Progname = strrchr(argv[0],'/');
   Progname = (NULL == Progname) ? argv[0] : Progname + 1;
   
-  while ((ch = getopt(argc, argv, "cdf:g:hl:p:s:u:Uw?")) != EOF)
+  while ((ch = getopt(argc, argv, "Ccdf:g:hl:p:s:u:Uw?")) != EOF)
     switch(ch) {
       /*case 'a':
 	align   = TRUE;
@@ -876,6 +919,9 @@ int main(int argc, char **argv) {
       break;
     case 'w':
       wide    = TRUE;
+      break;
+    case 'C':
+      color   = TRUE;
       break;
     case 'h':
     case '?':
